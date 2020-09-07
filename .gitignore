@@ -1,3 +1,6 @@
+#vscode workspaces
+*.coda-workspace
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
