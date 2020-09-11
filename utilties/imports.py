@@ -47,19 +47,60 @@ def view_tfm(*size):
     def _inner(x): return x.view(*((-1,)+size))
     return _inner
 
+#updated for Leaky Relu 
+def append_stats(hook, mod, inp, outp):
+    if not hasattr(hook,'stats'): hook.stats = ([],[],[])
+    means,stds,hists = hook.stats
+    means.append(outp.data.mean().cpu())
+    stds .append(outp.data.std().cpu())
+    hists.append(outp.data.cpu().histc(40,-7,7))
+
+def combine_schedules(pcts, scheds):
+    assert sum(pcts) == 1.
+    pcts = tensor([0] + convert_to_list(pcts))
+    assert torch.all(pcts >= 0)
+    pcts = torch.cumsum(pcts, 0)
+    def _inner(pos):
+        idx = (pos >= pcts).nonzero().max()
+        actual_pos = (pos-pcts[idx]) / (pcts[idx+1]-pcts[idx])
+        return scheds[idx](actual_pos)
+    return _inner
+
 #creating 2d convolution models
-def conv2d(ni, nf, ks=3, stride=2):
-    return nn.Sequential(
-        nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), nn.ReLU())
+# def conv2d(ni, nf, ks=3, stride=2):
+#     return nn.Sequential(
+#         nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), nn.ReLU())
 
-def get_cnn_layers(num_categories, nfs):
+# def get_cnn_layers(num_categories, nfs):
+#     nfs = [1] + nfs
+#     return [
+#         conv2d(nfs[i], nfs[i+1], 5 if i==0 else 3) for i in range(len(nfs)-1)
+#     ] + [nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(nfs[-1], num_categories)]
+
+# def get_cnn_model(num_categories, nfs):
+#     return nn.Sequential(*get_cnn_layers(num_categories, nfs))
+
+#creating 2d convolution models
+#passing in GeneralReLU args
+def get_cnn_layers(num_categories, nfs, layer, **kwargs):
     nfs = [1] + nfs
-    return [
-        conv2d(nfs[i], nfs[i+1], 5 if i==0 else 3) for i in range(len(nfs)-1)
-    ] + [nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(nfs[-1], num_categories)]
+    return [layer(nfs[i], nfs[i+1], 5 if i==0 else 3, **kwargs)
+            for i in range(len(nfs)-1)] + [
+        nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(nfs[-1], num_categories)]
 
-def get_cnn_model(num_categories, nfs):
-    return nn.Sequential(*get_cnn_layers(num_categories, nfs))
+def conv_layer(ni, nf, ks=3, stride=2, **kwargs):
+    return nn.Sequential(
+        nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), GeneralReLU(**kwargs))
+
+def init_cnn(m, uniform=False):
+    f = torch.nn.init.kaiming_uniform_ if uniform else torch.nn.init.kaiming_normal_
+    for l in m:
+        if isinstance(l, nn.Sequential):
+            f(l[0].weight, a=0.1)
+            l[0].bias.data.zero_()
+            
+def get_cnn_model(data, nfs, layer, **kwargs):
+    return nn.Sequential(*get_cnn_layers(data, nfs, layer, **kwargs))
 
 #returns the model and optimizer, will be refactored to be more versatile, currently just used for simple testing
 def get_model(training_dl, lr=0.5, nh=50):
@@ -120,6 +161,61 @@ class CancelTrainException(Exception): pass
 class CancelEpochException(Exception): pass
 class CancelBatchException(Exception): pass
 
+#Hooks -------------------------------------------------------------------------------------------------------------------------------------------
+#hook functions
+
+#updated for Leaky Relu 
+def append_stats(hook, mod, inp, outp):
+    if not hasattr(hook,'stats'): hook.stats = ([],[],[])
+    means,stds,hists = hook.stats
+    means.append(outp.data.mean().cpu())
+    stds .append(outp.data.std().cpu())
+    hists.append(outp.data.cpu().histc(40,-7,7))
+
+#hook classes
+#numpy style object container
+#used to register a forward hook 
+class ForwardHook():
+    def __init__(self, m, f): 
+        self.hook = m.register_forward_hook(partial(f, self))
+    def remove(self): self.hook.remove()
+    def __del__(self): self.remove()
+
+
+class ListContainer():
+    def __init__(self, items): self.items = convert_to_list(items)
+    def __getitem__(self, idx):
+        if isinstance(idx, (int,slice)): return self.items[idx]
+        if isinstance(idx[0],bool):
+            assert len(idx)==len(self) # bool mask
+            return [o for m,o in zip(idx,self.items) if m]
+        return [self.items[i] for i in idx]
+    def __len__(self): return len(self.items)
+    def __iter__(self): return iter(self.items)
+    def __setitem__(self, i, o): self.items[i] = o
+    def __delitem__(self, i): del(self.items[i])
+    def __repr__(self):
+        res = f'{self.__class__.__name__} ({len(self)} items)\n{self.items[:10]}'
+        if len(self)>10: res = res[:-1]+ '...]'
+        return res
+    
+    
+#hooks container
+class Hooks(ListContainer):
+    def __init__(self, ms, f): super().__init__([ForwardHook(m, f) for m in ms])
+    def __enter__(self, *args): return self
+    def __exit__ (self, *args): self.remove()
+    def __del__(self): self.remove()
+
+    def __delitem__(self, i):
+        self[i].remove()
+        super().__delitem__(i)
+        
+    def remove(self): #removes all registered hooks
+        for h in self: h.remove()
+
+
+#Callbacks ---------------------------------------------------------------------------------------------------------------------------------------
 class Callback():
     _order = 0
     def set_runner(self, run): self.run=run
@@ -297,3 +393,19 @@ class Lambda(nn.Module):
         self.func = func
 
     def forward(self, x): return self.func(x)
+
+class GeneralReLU(nn.Module): #generalized ReLU class
+    def __init__(self, leak=None, sub_value=None, value_cuttoff=None):
+        super().__init__()
+        self.leak = leak
+        self.sub = sub_value
+        self.cuttoff = value_cuttoff
+        
+    def forward(self, x_in):
+        x_in = F.leaky_relu(x_in, self.leak) if self.leak is not None else F.relu(x_in)
+        if self.sub is not None:
+            x_in.sub_(self.sub)
+        if self.cuttoff is not None:
+            x_in.clamp_max_(self.cuttoff)
+        return x_in
+    
