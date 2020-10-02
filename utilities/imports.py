@@ -1,21 +1,46 @@
 from fastai import datasets
 from pathlib import Path
 from IPython.core.debugger import set_trace
-import pickle, gzip, math, torch, re, matplotlib as mpl, matplotlib.pyplot as plt
+import os,PIL, mimetypes, pickle, gzip, math, torch, re, matplotlib as mpl, matplotlib.pyplot as plt
 from functools import partial
 import numpy
-from typing import Iterable
+from typing import Iterable, Any
 from torch import tensor, nn, optim
 from torch.utils.data import DataLoader, TensorDataset,  SequentialSampler, RandomSampler
 import torch.nn.functional as F
 import torch.nn.init
+from collections import OrderedDict
 
+#os and path functions
+def get_file_paths(path, files, extensions = None):
+    path = Path(path) #can pass path as string or LibPath
+    res = [path/f for f in files if not f.startswith('.')
+           and ((not extensions) or f'.{f.split(".")[-1].lower()}' in extensions)]
+    return res
+
+def get_file_names(path):
+    return [file.name for file in os.scandir(path)]
+
+def get_all_files(path, extensions=None, recurse=False, include=None):
+    path = Path(path)
+    extensions = convert_to_set(extensions)
+    extensions = {e.lower() for e in extensions}
+    if recurse:
+        res = []
+        for i,(p,d,f) in enumerate(os.walk(path)): # returns (dirpath, dirnames, filenames)
+            if include is not None and i==0: d[:] = [o for o in d if o in include]
+            else:                            d[:] = [o for o in d if not o.startswith('.')]
+            res += get_file_paths(p, f, extensions)
+        return res
+    else:
+        f = [o.name for o in os.scandir(path) if o.is_file()]
+        return get_file_paths(path, f, extensions)
 #specific dataset functions
 #MNIST
 
 
 
-#helper functions
+############helper functions
 _camel_re1 = re.compile('(.)([A-Z][a-z]+)')
 _camel_re2 = re.compile('([a-z0-9])([A-Z])')
 def camel2snake(name):
@@ -29,6 +54,9 @@ def convert_to_list(o):
     if isinstance(o, Iterable): return list(o)
     return [o]
 
+def convert_to_set(obj):
+    return obj if isinstance(obj, set) else set(convert_to_list(obj))
+
 def accuracy(out, yb): #
      return (torch.argmax(out, dim=1)==yb).float().mean()
 
@@ -40,6 +68,7 @@ def normalize_to(train, valid):
     m,s = train.mean(),train.std()
     return normalize(train, m, s), normalize(valid, m, s)
 
+#image dataset helper functions
 #resize mnist image data -> 28x28
 def mnist_resize(x): return x.view(-1, 1, 28, 28)
 
@@ -52,6 +81,10 @@ def view_tfm(*size):
     def _inner(x): return x.view(*((-1,)+size))
     return _inner
 
+def list_image_ext():
+    return set(k for k,v in mimetypes.types_map.items() if v.startswith('image/'))
+
+#statistics helper functions
 #updated for Leaky Relu 
 def append_stats(hook, mod, inp, outp):
     if not hasattr(hook,'stats'): hook.stats = ([],[],[])
@@ -69,16 +102,6 @@ def append_mean_std(hook, model, inp, outp):
         means.append(outp.data.mean())
         stds.append(outp.data.std())
 
-def combine_schedules(pcts, scheds):
-    assert sum(pcts) == 1.
-    pcts = tensor([0] + convert_to_list(pcts))
-    assert torch.all(pcts >= 0)
-    pcts = torch.cumsum(pcts, 0)
-    def _inner(pos):
-        idx = (pos >= pcts).nonzero().max()
-        actual_pos = (pos-pcts[idx]) / (pcts[idx+1]-pcts[idx])
-        return scheds[idx](actual_pos)
-    return _inner
 
 
 #creating 2d convolution models
@@ -89,7 +112,7 @@ def get_cnn_layers(num_categories, num_features, layer, **kwargs):
             for i in range(len(num_features)-1)] + [
         nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(num_features[-1], num_categories)]
 
-#dont need bias is using batchnorm
+#dont need bias, is using batchnorm
 def conv_layer(ni, num_features, ks=3, stride=2, batch_norm=True, **kwargs):
     layers = [nn.Conv2d(ni, num_features, ks, padding=ks//2, stride=stride, bias = not batch_norm), 
             GeneralReLU(**kwargs)]
@@ -98,7 +121,7 @@ def conv_layer(ni, num_features, ks=3, stride=2, batch_norm=True, **kwargs):
         # layers.append(Batch_Normalization(num_features))
     return nn.Sequential(*layers)
 
-
+#0s all the bias weights, calls the passed initalizations function on each layer in the model
 def init_cnn_(model, func):
     if isinstance(model, nn.Conv2d):
         func(model.weight, a =0.1)
@@ -127,6 +150,13 @@ def get_data(path_in, encoding_in='latin-1'):
         ((x_train, y_train), (x_valid, y_valid), _) = pickle.load(f, encoding=encoding_in)
     return map(tensor, (x_train,y_train,x_valid,y_valid))
 
+#takes a batch from a dataloader and applies the supplied runner callbacks to it
+def get_one_batch(dl, runner):
+    runner.xb, runner.yb = next(iter(dl))
+    for cb in runner.cbs:
+        cb.set_runner(runner)
+    runner('begin_batch')
+    return runner.xb, runner.yb
 
 class Dataset():
     def __init__(self, x_ds, y_ds):
@@ -184,6 +214,27 @@ def append_stats(hook, mod, inp, outp):
     stds .append(outp.data.std().cpu())
     hists.append(outp.data.cpu().histc(40,-7,7))
 
+#prints the means and stds of hooked layers
+def append_stat(hook, model, input, output):
+    d = output.data
+    hook.mean, hook.std = d.mean().item(), d.std().item()
+
+
+###hook helper functions
+##applies LSUV initalization to passed in convolutional module layers [Conv1d,2D,3D, linear, ReLU]
+#use get_all_modules to get the list of modules to pass in
+#model passed in must be the same as where the list of modules comes from
+#use get_one_batch -> x_mb is the training minibatch X of the model
+def lsuv_module(model, module, x_mb):
+    error_ceiling = 1e-3
+    hook = ForwardHook(module, append_stat)
+    while model(x_mb) is not None and abs(hook.mean) > error_ceiling: #correct the means
+        module.bias -= hook.mean
+    while model(x_mb) is not None and abs(hook.std - 1) > error_ceiling: #correct the standard deviations
+        module.weight.data /= hook.std
+    hook.remove()
+    return hook.mean, hook.std
+
 #hook classes
 #numpy style object container
 #used to register a forward hook 
@@ -212,6 +263,17 @@ class ListContainer():
         return res
 
 #scheduling functions
+def combine_schedules(pcts, scheds):
+    assert sum(pcts) == 1.
+    pcts = tensor([0] + convert_to_list(pcts))
+    assert torch.all(pcts >= 0)
+    pcts = torch.cumsum(pcts, 0)
+    def _inner(pos):
+        idx = (pos >= pcts).nonzero().max()
+        actual_pos = (pos-pcts[idx]) / (pcts[idx+1]-pcts[idx])
+        return scheds[idx](actual_pos)
+    return _inner
+
 def annealer(f): #decorator used to define anneling functions, that can be passed to the ParameterSchedule set_params()
     def _inner(start, end):
         return partial(f, start, end)
@@ -422,6 +484,17 @@ class Runner():
 
 
 #Pytorch Module
+#helper function to find modules within a model recursively
+def get_all_modules(model, predictate):
+    if predictate(model):
+        return [model]
+    return sum([get_all_modules(o, predictate) for o in model.children()], [])
+
+#passed as predicate function to get_all_modules
+def is_linear_layer(layer):
+    lin_layers = (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear, nn.ReLU)
+    return isinstance(layer, lin_layers)
+
 class Lambda(nn.Module):
     def __init__(self, func):
         super().__init__()
@@ -469,3 +542,24 @@ class Batch_Normalization(nn.Module):
         else: m,v = self.means,self.variances
         x = (x-m) / (v+self.epsilon).sqrt()
         return x*self.multipliers + self.adds       
+
+
+class ConvLayer2D(nn.Module):
+    def __init__(self, num_in, num_fm, kernel_size = 3, stride=2, sub=0., **kwargs):
+        super().__init__()
+        self.conv = nn.Conv2d(num_in, num_fm, kernel_size, padding=kernel_size//2, stride=stride, bias=True)
+        self.relu = GeneralReLU(sub_value=sub, **kwargs)
+
+    def forward(self, x):
+         return self.relu(self.conv(x))
+
+    @property
+    def bias(self): return -self.relu.sub
+
+    @property
+    def weight(self): return self.conv.weight
+    
+    @bias.setter
+    def bias(self, value): self.relu.sub = -value
+
+    
