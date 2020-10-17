@@ -1,3 +1,7 @@
+
+#old deprecated directories
+utilities_ol/
+
 #vscode workspaces
 *.coda-workspace
 
