@@ -10,6 +10,10 @@ from torch.utils.data import DataLoader, TensorDataset,  SequentialSampler, Rand
 import torch.nn.functional as F
 import torch.nn.init
 from collections import OrderedDict
+import random
+from utilities.augmentations import *
+from utilities.statistics import *
+from utilities.2D_CNN import *
 
 #os and path functions
 def get_file_paths(path, files, extensions = None):
@@ -57,11 +61,11 @@ def convert_to_list(o):
 def convert_to_set(obj):
     return obj if isinstance(obj, set) else set(convert_to_list(obj))
 
-def accuracy(out, yb): #
-     return (torch.argmax(out, dim=1)==yb).float().mean()
+# def accuracy(out, yb): #
+#      return (torch.argmax(out, dim=1)==yb).float().mean()
 
-def normalize(x, m, s):
-    return (x-m)/s
+# def normalize(x, m, s):
+#     return (x-m)/s
 
 #normalize datasets
 def normalize_to(train, valid):
@@ -78,75 +82,96 @@ normalize_imagenette = partial(normalize_channels, mean=_m.cuda(), std=_s.cuda()
 
 #image dataset helper functions
 #show a PIL image, pass in Pytorch Tensor
-def show_image(im, figsize=(3,3)):
-    plt.figure(figsize=figsize)
+def show_image(im, fig_size=(3,3)):
+    if not isinstance(im, torch.Tensor):
+        im = to_byte_tensor(im)
+    plt.figure(figsize=fig_size)
     plt.axis('off')
     plt.imshow(im.permute(1,2,0))
 
-#resize mnist image data -> 28x28
-def mnist_resize(x): return x.view(-1, 1, 28, 28)
+#helper function for show_batch
+def show_image_plot(im, ax=None, figsize=(3,3)):
+    if ax is None: _,ax = plt.subplots(1, 1, figsize=figsize)
+    ax.axis('off')
+    ax.imshow(im.permute(1,2,0))
 
-#flatten an image to 
-def flatten(x):
-    return x.view(x.shape[0], -1) #removes 1,1 axis from result of AvgPool layer
+def show_batch(batch, num_columns=4, num_rows=None, fig_size=None):
+    """plot a batch of images using matplotlib"""
+    n = len(batch)
+    if num_rows is None:
+        num_rows = int(math.ceil(n/num_columns)) #make it squarish
+    if fig_size is None:
+        fig_size=(num_columns*3, num_rows*3)
+    fig,axes = plt.subplots(num_rows, num_columns, figsize=(fig_size))
+    for xi, ax in zip(batch, axes.flat):
+        show_image_plot(xi, ax)
+
+def mnist_resize(x):
+    """resizes an image to 28x28 dimensions"""
+    return x.view(-1, 1, 28, 28)
+
+# #flatten an image to 
+# def flatten(x):
+#     return x.view(x.shape[0], -1) #removes 1,1 axis from result of AvgPool layer
 
 #re-view an x variable at a specific size
 def view_tfm(*size):
     def _inner(x): return x.view(*((-1,)+size))
     return _inner
 
-def list_image_ext():
-    return set(k for k,v in mimetypes.types_map.items() if v.startswith('image/'))
+# def list_image_ext():
+#     return set(k for k,v in mimetypes.types_map.items() if v.startswith('image/'))
 
 #statistics helper functions
 #updated for Leaky Relu 
-def append_stats(hook, mod, inp, outp):
-    if not hasattr(hook,'stats'): hook.stats = ([],[],[])
-    means,stds,hists = hook.stats
-    means.append(outp.data.mean().cpu())
-    stds .append(outp.data.std().cpu())
-    hists.append(outp.data.cpu().histc(40,-7,7))
+# def append_stats(hook, mod, inp, outp):
+#     """collect statistics using Pytorch Hooks"""
+#     if not hasattr(hook,'stats'): hook.stats = ([],[],[])
+#     means,stds,hists = hook.stats
+#     means.append(outp.data.mean().cpu())
+#     stds .append(outp.data.std().cpu())
+#     hists.append(outp.data.cpu().histc(40,-7,7))
 
-#hook for mean and std
-def append_mean_std(hook, model, inp, outp):
-    if not hasattr(hook, 'stats'):
-        hook.stats=([],[])
-    means, stds = hook.stats
-    if model.training:
-        means.append(outp.data.mean())
-        stds.append(outp.data.std())
+# #hook for mean and std
+# def append_mean_std(hook, model, inp, outp):
+#     if not hasattr(hook, 'stats'):
+#         hook.stats=([],[])
+#     means, stds = hook.stats
+#     if model.training:
+#         means.append(outp.data.mean())
+#         stds.append(outp.data.std())
 
 
 
-#creating 2d convolution models
-#passing in GeneralReLU args
-def get_cnn_layers(num_categories, num_features, layer, **kwargs):
-    num_features = [1] + num_features
-    return [layer(num_features[i], num_features[i+1], 5 if i==0 else 3, **kwargs)
-            for i in range(len(num_features)-1)] + [
-        nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(num_features[-1], num_categories)]
+# #creating 2d convolution models
+# #passing in GeneralReLU args
+# def get_cnn_layers(num_categories, num_features, layer, **kwargs):
+#     num_features = [1] + num_features
+#     return [layer(num_features[i], num_features[i+1], 5 if i==0 else 3, **kwargs)
+#             for i in range(len(num_features)-1)] + [
+#         nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(num_features[-1], num_categories)]
 
-#dont need bias, is using batchnorm
-def conv_layer(ni, num_features, ks=3, stride=2, batch_norm=True, **kwargs):
-    layers = [nn.Conv2d(ni, num_features, ks, padding=ks//2, stride=stride, bias = not batch_norm), 
-            GeneralReLU(**kwargs)]
-    if batch_norm:
-        layers.append(torch.nn.BatchNorm2d(num_features, eps=1e-5, momentum=0.1))
-        # layers.append(Batch_Normalization(num_features))
-    return nn.Sequential(*layers)
+# #dont need bias, is using batchnorm
+# def conv_layer(ni, num_features, ks=3, stride=2, batch_norm=True, **kwargs):
+#     layers = [nn.Conv2d(ni, num_features, ks, padding=ks//2, stride=stride, bias = not batch_norm), 
+#             GeneralReLU(**kwargs)]
+#     if batch_norm:
+#         layers.append(torch.nn.BatchNorm2d(num_features, eps=1e-5, momentum=0.1))
+#         # layers.append(Batch_Normalization(num_features))
+#     return nn.Sequential(*layers)
 
-#0s all the bias weights, calls the passed initalizations function on each layer in the model
-def init_cnn_(model, func):
-    if isinstance(model, nn.Conv2d):
-        func(model.weight, a =0.1)
-        if getattr(model, 'bias', None) is not None:
-            model.bias.data.zero_()
-    for layer in model.children():
-        init_cnn_(layer, func)
+# #0s all the bias weights, calls the passed initalizations function on each layer in the model
+# def init_cnn_(model, func):
+#     if isinstance(model, nn.Conv2d):
+#         func(model.weight, a =0.1)
+#         if getattr(model, 'bias', None) is not None:
+#             model.bias.data.zero_()
+#     for layer in model.children():
+#         init_cnn_(layer, func)
 
-def init_cnn(model, uniform=False):
-    f = torch.nn.init.kaiming_uniform_ if uniform else torch.nn.init.kaiming_normal_
-    init_cnn_(model, f)
+# def init_cnn(model, uniform=False):
+#     f = torch.nn.init.kaiming_uniform_ if uniform else torch.nn.init.kaiming_normal_
+#     init_cnn_(model, f)
             
 # def get_cnn_model(num_categories, num_features, layer, **kwargs):
 #     return nn.Sequential(*get_cnn_layers(num_categories, num_features, layer, **kwargs))
@@ -159,21 +184,21 @@ def init_cnn(model, uniform=False):
 #     return model, optim.SGD(model.parameters(), lr=lr)
 
 ##updated CNN model maker
-def prev_pow_2(x): return 2**math.floor(math.log2(x))
 
-def get_cnn_layers(train_dl, valid_dl, num_ch, num_cat, nfs,layer, **kwargs):
-    def f(ni, nf, stride=2): return layer(ni, nf, 3, stride=stride, **kwargs)
-    l1 = num_ch
-    l2 = prev_pow_2(l1*3*3)
-    #3x3 kernel sizes
-    layers =  [f(l1  , l2  , stride=1),
-               f(l2  , l2*2, stride=2),
-               f(l2*2, l2*4, stride=2)]
-    nfs = [l2*4] + nfs
-    layers += [f(nfs[i], nfs[i+1]) for i in range(len(nfs)-1)]  #build the layers with proper input/output sizes
-    layers += [nn.AdaptiveAvgPool2d(1), Lambda(flatten),  #a typical last layer, has num_categories channels out
-               nn.Linear(nfs[-1], num_cat)]
-    return layers
+
+# def get_cnn_layers(train_dl, valid_dl, num_ch, num_cat, nfs,layer, **kwargs):
+#     def f(ni, nf, stride=2): return layer(ni, nf, 3, stride=stride, **kwargs)
+#     l1 = num_ch
+#     l2 = prev_pow_2(l1*3*3)
+#     #3x3 kernel sizes
+#     layers =  [f(l1  , l2  , stride=1),
+#                f(l2  , l2*2, stride=2),
+#                f(l2*2, l2*4, stride=2)]
+#     nfs = [l2*4] + nfs
+#     layers += [f(nfs[i], nfs[i+1]) for i in range(len(nfs)-1)]  #build the layers with proper input/output sizes
+#     layers += [nn.AdaptiveAvgPool2d(1), Lambda(flatten),  #a typical last layer, has num_categories channels out
+#                nn.Linear(nfs[-1], num_cat)]
+#     return layers
 
 def get_cnn_model(train_dl, valid_dl, num_chs, num_cat, nfs, layer, **kwargs):
     return nn.Sequential(*get_cnn_layers(train_dl, valid_dl, num_chs, num_cat, nfs, layer, **kwargs))
@@ -190,28 +215,28 @@ def get_data(path_in, encoding_in='latin-1'):
         ((x_train, y_train), (x_valid, y_valid), _) = pickle.load(f, encoding=encoding_in)
     return map(tensor, (x_train,y_train,x_valid,y_valid))
 
-#takes a batch from a dataloader and applies the supplied runner callbacks to it
-def get_one_batch(dl, runner):
-    runner.xb, runner.yb = next(iter(dl))
-    for cb in runner.cbs:
-        cb.set_runner(runner)
-    runner('begin_batch')
-    return runner.xb, runner.yb
+# #takes a batch from a dataloader and applies the supplied runner callbacks to it
+# def get_one_batch(dl, runner):
+#     runner.xb, runner.yb = next(iter(dl))
+#     for cb in runner.cbs:
+#         cb.set_runner(runner)
+#     runner('begin_batch')
+#     return runner.xb, runner.yb
 
 
 
-#splits by grandparent directory using the passed in parent directory names
-def grandparent_splitter(fn, valid_name='valid', train_name='train'):
-    gp = fn.parent.parent.name
-    return True if gp==valid_name else False if gp==train_name else None
+# #splits by grandparent directory using the passed in parent directory names
+# def grandparent_splitter(fn, valid_name='valid', train_name='train'):
+#     gp = fn.parent.parent.name
+#     return True if gp==valid_name else False if gp==train_name else None
 
-#splits a list of items by a given function
-def split_by_function(items, func):
-    mask = [func(o) for o in items]
-    # `None` values will be filtered out
-    f_itms = [o for o,m in zip(items,mask) if m==False]
-    t_itms = [o for o,m in zip(items,mask) if m==True ]
-    return f_itms,t_itms
+# #splits a list of items by a given function
+# def split_by_function(items, func):
+#     mask = [func(o) for o in items]
+#     # `None` values will be filtered out
+#     f_itms = [o for o,m in zip(items,mask) if m==False]
+#     t_itms = [o for o,m in zip(items,mask) if m==True ]
+#     return f_itms,t_itms
 
 class Dataset():
     def __init__(self, x_ds, y_ds):
@@ -279,12 +304,12 @@ def compose(x, funcs, *args, order_key='_order', **kwargs):
 
 
 ###Labelling Helper Functions
-def parent_labeler(fn): return fn.parent.name
+# def parent_labeler(fn): return fn.parent.name
 
-def label_by_func(sd, f, proc_x=None, proc_y=None):
-    train = LabeledData.label_by_func(sd.train, f, proc_x=proc_x, proc_y=proc_y)
-    valid = LabeledData.label_by_func(sd.valid, f, proc_x=proc_x, proc_y=proc_y)
-    return SplitData(train,valid)
+# def label_by_func(sd, f, proc_x=None, proc_y=None):
+#     train = LabeledData.label_by_func(sd.train, f, proc_x=proc_x, proc_y=proc_y)
+#     valid = LabeledData.label_by_func(sd.valid, f, proc_x=proc_x, proc_y=proc_y)
+#     return SplitData(train,valid)
 
 def get_unique_keys(lst, sort=False):
     result = list(OrderedDict.fromkeys(lst).keys()) #get the keys
@@ -313,41 +338,41 @@ class CategoryProcessor(Processor):
         return self.vocab[idx]
 
 ###Transform helper functions
-def to_byte_tensor(item):
-    result = torch.ByteTensor(torch.ByteStorage.from_buffer(item.tobytes())) #convert to bytes using PyTorch
-    w,h = item.size
-    return result.view(h,w,-1).permute(2,0,1) #matrix transform to move Channel (back in PIL) to front (front in Pytorch Tesnsors)
-to_byte_tensor._order = 20
+# def to_byte_tensor(item):
+#     result = torch.ByteTensor(torch.ByteStorage.from_buffer(item.tobytes())) #convert to bytes using PyTorch
+#     w,h = item.size
+#     return result.view(h,w,-1).permute(2,0,1) #matrix transform to move Channel (back in PIL) to front (front in Pytorch Tesnsors)
+# to_byte_tensor._order = 20
 
 
-def to_float_tensor(item):
-    _order = 30
-    return item.float().div_(255.) #in range [0,1]
-to_float_tensor._order = 30
+# def to_float_tensor(item):
+#     _order = 30
+#     return item.float().div_(255.) #in range [0,1]
+# to_float_tensor._order = 30
 
-def make_rgb(item):
-    return item.convert('RGB')
+# def make_rgb(item):
+#     return item.convert('RGB')
 
-class Transform():
-    _order = 0
+# class Transform():
+#     _order = 0
     
     
-class convert_to_RGB(Transform):
-    def __call__(self, item):
-        if not isinstance(type(item), type(PIL.Image.Image)):
-            raise TypeError('Images must be of type:' + str(PIL.Image.Image))
-        return item.convert('RGB')
+# class convert_to_RGB(Transform):
+#     def __call__(self, item):
+#         if not isinstance(type(item), type(PIL.Image.Image)):
+#             raise TypeError('Images must be of type:' + str(PIL.Image.Image))
+#         return item.convert('RGB')
 
-class ResizedFixed(Transform):
-    _order = 10 #ensure it happens after the other transforms
-    def __init__(self, size):
-            if isinstance(size, int): #make the 2D square dimensions 
-                size =(size,size)
-            self.size = size
-    def __call__(self, item, image_interpolation=PIL.Image.BILINEAR):
-        if not isinstance(item, PIL.Image.Image):
-            raise TypeError
-        return item.resize(self.size, image_interpolation)
+# class ResizedFixed(Transform):
+#     _order = 10 #ensure it happens after the other transforms
+#     def __init__(self, size):
+#             if isinstance(size, int): #make the 2D square dimensions 
+#                 size =(size,size)
+#             self.size = size
+#     def __call__(self, item, image_interpolation=PIL.Image.BILINEAR):
+#         if not isinstance(item, PIL.Image.Image):
+#             raise TypeError
+#         return item.resize(self.size, image_interpolation)
 
 class AvgStats():
     def __init__(self, metrics, in_train):
@@ -425,53 +450,53 @@ class ForwardHook():
     def __del__(self): self.remove()
 
 
-class ListContainer():
-    def __init__(self, items): self.items = convert_to_list(items)
-    def __getitem__(self, idx):
-        if isinstance(idx, (int,slice)): return self.items[idx]
-        if isinstance(idx[0],bool):
-            assert len(idx)==len(self) # bool mask
-            return [o for m,o in zip(idx,self.items) if m]
-        return [self.items[i] for i in idx]
-    def __len__(self): return len(self.items)
-    def __iter__(self): return iter(self.items)
-    def __setitem__(self, i, o): self.items[i] = o
-    def __delitem__(self, i): del(self.items[i])
-    def __repr__(self):
-        res = f'{self.__class__.__name__} ({len(self)} items)\n{self.items[:10]}'
-        if len(self)>10: res = res[:-1]+ '...]'
-        return res
+# class ListContainer():
+#     def __init__(self, items): self.items = convert_to_list(items)
+#     def __getitem__(self, idx):
+#         if isinstance(idx, (int,slice)): return self.items[idx]
+#         if isinstance(idx[0],bool):
+#             assert len(idx)==len(self) # bool mask
+#             return [o for m,o in zip(idx,self.items) if m]
+#         return [self.items[i] for i in idx]
+#     def __len__(self): return len(self.items)
+#     def __iter__(self): return iter(self.items)
+#     def __setitem__(self, i, o): self.items[i] = o
+#     def __delitem__(self, i): del(self.items[i])
+#     def __repr__(self):
+#         res = f'{self.__class__.__name__} ({len(self)} items)\n{self.items[:10]}'
+#         if len(self)>10: res = res[:-1]+ '...]'
+#         return res
 
-class ItemList(ListContainer):
-    def __init__(self, items, path='.', tfms=None):
-        super().__init__(items)
-        self.path,self.tfms = Path(path),tfms
+# class ItemList(ListContainer):
+#     def __init__(self, items, path='.', tfms=None):
+#         super().__init__(items)
+#         self.path,self.tfms = Path(path),tfms
 
-    def __repr__(self): return f'{super().__repr__()}\nPath: {self.path}'
+#     def __repr__(self): return f'{super().__repr__()}\nPath: {self.path}'
     
-    def new(self, items, cls=None):
-        if cls is None: cls=self.__class__
-        return cls(items, self.path, tfms=self.tfms)
+#     def new(self, items, cls=None):
+#         if cls is None: cls=self.__class__
+#         return cls(items, self.path, tfms=self.tfms)
     
-    def  get(self, i): return i
-    def _get(self, i): return compose(self.get(i), self.tfms)
+#     def  get(self, i): return i
+#     def _get(self, i): return compose(self.get(i), self.tfms)
     
-    def __getitem__(self, idx):
-        res = super().__getitem__(idx)
-        if isinstance(res,list): return [self._get(o) for o in res]
-        return self._get(res)
+#     def __getitem__(self, idx):
+#         res = super().__getitem__(idx)
+#         if isinstance(res,list): return [self._get(o) for o in res]
+#         return self._get(res)
     
 
-class ImageList(ItemList):
-    @classmethod
-    def from_files(cls, path, extensions=None, recurse=True, include=None, **kwargs):
-        if extensions is None: extensions = list_image_ext()
-        return cls(get_all_files(path, extensions, recurse=recurse, include=include), path, **kwargs)
+# class ImageList(ItemList):
+#     @classmethod
+#     def from_files(cls, path, extensions=None, recurse=True, include=None, **kwargs):
+#         if extensions is None: extensions = list_image_ext()
+#         return cls(get_all_files(path, extensions, recurse=recurse, include=include), path, **kwargs)
     
-    def get(self, fn): return PIL.Image.open(fn)
+#     def get(self, fn): return PIL.Image.open(fn)
 
 
-def _label_by_func(ds, f, cls=ItemList): return cls([f(o) for o in ds.items], path=ds.path)
+# def _label_by_func(ds, f, cls=ItemList): return cls([f(o) for o in ds.items], path=ds.path)
 
 
 #scheduling functions
@@ -645,122 +670,122 @@ lamb_step._defaults = dict(eps=1e-6, weight_decay=0.)
 #Optimizer Changes to Callbacks: only thing that is different is hyperparameters are what we use in callbacks instead of just param_groups
 #                   if using torch.optim -> execute by going through torch.optim.param_groups
 #                   if using Generalized optimizer -> execute by going through each hyper-parameter
-class Callback():
-    _order = 0
-    def set_runner(self, run): self.run=run
-    def __getattr__(self, k): return getattr(self.run, k)
+# class Callback():
+#     _order = 0
+#     def set_runner(self, run): self.run=run
+#     def __getattr__(self, k): return getattr(self.run, k)
 
-    @property
-    def name(self):
-        name = re.sub(r'Callback$', '', self.__class__.__name__)
-        return camel2snake(name or 'callback')
+#     @property
+#     def name(self):
+#         name = re.sub(r'Callback$', '', self.__class__.__name__)
+#         return camel2snake(name or 'callback')
 
-    def __call__(self, cb_name):
-        f = getattr(self, cb_name, None)
-        if f and f(): return True
-        return False
+#     def __call__(self, cb_name):
+#         f = getattr(self, cb_name, None)
+#         if f and f(): return True
+#         return False
 
-class Recorder(Callback):
-    def begin_fit(self): self.lrs,self.losses = [],[]
+# class Recorder(Callback):
+#     def begin_fit(self): self.lrs,self.losses = [],[]
 
-    def after_batch(self):
-        if not self.in_train: return
-        self.lrs.append(self.opt.hypers[-1]['learning_rate']) #goes through hyper parameters
-        self.losses.append(self.loss.detach().cpu())        
+#     def after_batch(self):
+#         if not self.in_train: return
+#         self.lrs.append(self.opt.hypers[-1]['learning_rate']) #goes through hyper parameters
+#         self.losses.append(self.loss.detach().cpu())        
 
-    def plot_lr  (self): plt.plot(self.lrs)
-    def plot_loss(self): plt.plot(self.losses)
+#     def plot_lr  (self): plt.plot(self.lrs)
+#     def plot_loss(self): plt.plot(self.losses)
         
-    def plot(self, skip_last=0):
-        losses = [o.item() for o in self.losses]
-        n = len(losses)-skip_last
-        plt.xscale('log')
-        plt.plot(self.lrs[:n], losses[:n])
+#     def plot(self, skip_last=0):
+#         losses = [o.item() for o in self.losses]
+#         n = len(losses)-skip_last
+#         plt.xscale('log')
+#         plt.plot(self.lrs[:n], losses[:n])
 
 
-class ParamScheduler(Callback):
-    _order=1
-    def __init__(self, pname, sched_funcs):
-        self.pname,self.sched_funcs = pname,convert_to_list(sched_funcs)
+# class ParamScheduler(Callback):
+#     _order=1
+#     def __init__(self, pname, sched_funcs):
+#         self.pname,self.sched_funcs = pname,convert_to_list(sched_funcs)
 
-    def begin_batch(self): 
-        if not self.in_train: return
-        fs = self.sched_funcs
-        if len(fs)==1: fs = fs*len(self.opt.param_groups)
-        pos = self.n_epochs/self.epochs
-        for f,h in zip(fs,self.opt.hypers): h[self.pname] = f(pos)
+#     def begin_batch(self): 
+#         if not self.in_train: return
+#         fs = self.sched_funcs
+#         if len(fs)==1: fs = fs*len(self.opt.param_groups)
+#         pos = self.n_epochs/self.epochs
+#         for f,h in zip(fs,self.opt.hypers): h[self.pname] = f(pos)
             
-class LR_Find(Callback):
-    _order=1
-    def __init__(self, max_iter=100, min_lr=1e-6, max_lr=10):
-        self.max_iter,self.min_lr,self.max_lr = max_iter,min_lr,max_lr
-        self.best_loss = 1e9
+# class LR_Find(Callback):
+#     _order=1
+#     def __init__(self, max_iter=100, min_lr=1e-6, max_lr=10):
+#         self.max_iter,self.min_lr,self.max_lr = max_iter,min_lr,max_lr
+#         self.best_loss = 1e9
         
-    def begin_batch(self): 
-        if not self.in_train: return
-        pos = self.n_iter/self.max_iter
-        lr = self.min_lr * (self.max_lr/self.min_lr) ** pos
-        for pg in self.opt.hypers: pg['learning_rate'] = lr
+#     def begin_batch(self): 
+#         if not self.in_train: return
+#         pos = self.n_iter/self.max_iter
+#         lr = self.min_lr * (self.max_lr/self.min_lr) ** pos
+#         for pg in self.opt.hypers: pg['learning_rate'] = lr
             
-    def after_step(self):
-        if self.n_iter>=self.max_iter or self.loss>self.best_loss*10:
-            raise CancelTrainException()
-        if self.loss < self.best_loss: self.best_loss = self.loss
+#     def after_step(self):
+#         if self.n_iter>=self.max_iter or self.loss>self.best_loss*10:
+#             raise CancelTrainException()
+#         if self.loss < self.best_loss: self.best_loss = self.loss
 
 
-###These Callbacks are based on torch.optim, look above for the Callbacks based on the generalized Optimizer
-#our standard used callback, included in every model
-class TrainEvalCallback(Callback):
-    def begin_fit(self):
-        self.run.n_epochs=0.
-        self.run.n_iter=0
+# ###These Callbacks are based on torch.optim, look above for the Callbacks based on the generalized Optimizer
+# #our standard used callback, included in every model
+# class TrainEvalCallback(Callback):
+#     def begin_fit(self):
+#         self.run.n_epochs=0.
+#         self.run.n_iter=0
 
-    def after_batch(self):
-        if not self.in_train: return
-        self.run.n_epochs += 1./self.iters
-        self.run.n_iter   += 1
+#     def after_batch(self):
+#         if not self.in_train: return
+#         self.run.n_epochs += 1./self.iters
+#         self.run.n_iter   += 1
         
-    def begin_epoch(self):
-        self.run.n_epochs=self.epoch
-        self.model.train()
-        self.run.in_train=True
+#     def begin_epoch(self):
+#         self.run.n_epochs=self.epoch
+#         self.model.train()
+#         self.run.in_train=True
 
-    def begin_validate(self):
-        self.model.eval()
-        self.run.in_train=False
+#     def begin_validate(self):
+#         self.model.eval()
+#         self.run.in_train=False
 
-class AvgStatsCallback(Callback):
-    def __init__(self, metrics):
-        self.train_stats,self.valid_stats = AvgStats(metrics,True),AvgStats(metrics,False)
+# class AvgStatsCallback(Callback):
+#     def __init__(self, metrics):
+#         self.train_stats,self.valid_stats = AvgStats(metrics,True),AvgStats(metrics,False)
         
-    def begin_epoch(self):
-        self.train_stats.reset()
-        self.valid_stats.reset()
+#     def begin_epoch(self):
+#         self.train_stats.reset()
+#         self.valid_stats.reset()
         
-    def after_loss(self):
-        stats = self.train_stats if self.in_train else self.valid_stats
-        with torch.no_grad(): stats.accumulate(self.run)
+#     def after_loss(self):
+#         stats = self.train_stats if self.in_train else self.valid_stats
+#         with torch.no_grad(): stats.accumulate(self.run)
     
-    def after_epoch(self):
-        print(self.train_stats)
-        print(self.valid_stats)
+#     def after_epoch(self):
+#         print(self.train_stats)
+#         print(self.valid_stats)
         
-class CudaCallbackDev(Callback):
-    def __init__(self,device): self.device=device
-    def begin_fit(self): 
-        self.model.to(self.device)
-    def begin_batch(self):
-        self.run.xb,self.run.yb = self.xb.to(self.device),self.yb.to(self.device)
+# class CudaCallbackDev(Callback):
+#     def __init__(self,device): self.device=device
+#     def begin_fit(self): 
+#         self.model.to(self.device)
+#     def begin_batch(self):
+#         self.run.xb,self.run.yb = self.xb.to(self.device),self.yb.to(self.device)
 
-class CudaCallback(Callback):
-    def begin_fit(self): self.model.cuda()
-    def begin_batch(self): self.run.xb,self.run.yb = self.xb.cuda(),self.yb.cuda()
+# class CudaCallback(Callback):
+#     def begin_fit(self): self.model.cuda()
+#     def begin_batch(self): self.run.xb,self.run.yb = self.xb.cuda(),self.yb.cuda()
 
-#applies a given transform to the independent variables (xs)
-class IndependentVarBatchTransformCallback(Callback):
-    _order=2
-    def __init__(self, tfm): self.tfm = tfm
-    def begin_batch(self): self.run.xb = self.tfm(self.xb)
+# #applies a given transform to the independent variables (xs)
+# class IndependentVarBatchTransformCallback(Callback):
+#     _order=2
+#     def __init__(self, tfm): self.tfm = tfm
+#     def begin_batch(self): self.run.xb = self.tfm(self.xb)
 
 
 # class Recorder(Callback):
