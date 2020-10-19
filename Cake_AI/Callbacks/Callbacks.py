@@ -2,6 +2,7 @@ from ..Data.helpers import camel2snake, convert_to_list
 import re
 import matplotlib.pyplot as plt
 from ..Exceptions import CancelTrainException
+import torch.no_grad
 
 class AvgStats():
     def __init__(self, metrics, in_train):
@@ -125,7 +126,8 @@ class AvgStatsCallback(Callback):
         
     def after_loss(self):
         stats = self.train_stats if self.in_train else self.valid_stats
-        with torch.no_grad(): stats.accumulate(self.run)
+        with torch.no_grad(): 
+            stats.accumulate(self.run)
     
     def after_epoch(self):
         print(self.train_stats)
