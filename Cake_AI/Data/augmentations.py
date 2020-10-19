@@ -1,3 +1,10 @@
+import mimetypes
+import PIL
+import torch
+import random
+from .Dataset import ImageList
+from pathlib import Path
+
 #image helper functions-------------------------------------------------------
 def list_image_ext():
     """lists the image extensions available on the current system"""
@@ -33,7 +40,7 @@ def two_step_resize(image, x_size, y_size):
     ret_img = PIL.Image
     if isinstance(image, PIL.Image.Image):
         ret_img = image.resize(size, resample=PIL.Image.BICUBIC).resize(size, resample = PIL.Image.NEAREST)
-    elif isinstance(image, pathlib.Path):
+    elif isinstance(image, Path):
         img = PIL.Image.open(image)
         ret_img = two_step_resize(img, x_size, y_size)
     else:
@@ -42,7 +49,7 @@ def two_step_resize(image, x_size, y_size):
 def PIL_random_flip(x):
     return x.transpose(PIL.Image.FLIP_LEFT_RIGHT) if random.random() < 0.5 else x
 
-def get_image_list(tfms):
+def get_image_list(tfms, dataset_path=Path('/')):
     return ImageList.from_files(dataset_path, tfms=tfms)
 
 

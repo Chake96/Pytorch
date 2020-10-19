@@ -1,6 +1,9 @@
-from Data.helpers import *
+from .helpers import split_by_function 
+from ..utilities import compose
+from .Data import ItemList
 
-
+def _label_by_func(ds, f, cls=ItemList): 
+    return cls([f(o) for o in ds.items], path=ds.path)
 
 def label_by_func(sd, f, proc_x=None, proc_y=None):
     """labels split data using the passed function and processors"""
@@ -57,7 +60,7 @@ class LabeledData():
     def obj(self, items, idx, procs):
         isint = isinstance(idx, int) or (isinstance(idx,torch.LongTensor) and not idx.ndim)
         item = items[idx]
-        for proc in reversed(listify(procs)):
+        for proc in reversed(convert_to_list(procs)):
             item = proc.deproc1(item) if isint else proc.deprocess(item)
         return item
 

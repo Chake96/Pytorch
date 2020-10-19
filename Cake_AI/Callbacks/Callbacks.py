@@ -1,6 +1,35 @@
-from Data.helpers import camel2snake, convert_to_list
+from ..Data.helpers import camel2snake, convert_to_list
 import re
 import matplotlib.pyplot as plt
+from ..Exceptions import CancelTrainException
+
+class AvgStats():
+    def __init__(self, metrics, in_train):
+        self.metrics = convert_to_list(metrics)
+        self.in_train = in_train
+        
+    def reset(self):
+        self.total_loss = 0.
+        self.count = 0
+        self.total_metrics = [0.] * len(self.metrics)
+        
+    @property
+    def all_stats(self): 
+        return [self.total_loss.item()] + self.total_metrics
+    @property
+    def avg_stats(self):
+        return [o/self.count for o in self.all_stats]
+    
+    def __repr__(self):
+        if not self.count: return ""
+        return f"{'train' if self.in_train else 'valid'}: {self.avg_stats}"
+
+    def accumulate(self, run):
+        batch_size = run.xb.shape[0]
+        self.total_loss += run.loss * batch_size
+        self.count += batch_size
+        for i,m in enumerate(self.metrics):
+            self.total_metrics[i] += m(run.pred, run.yb) * batch_size
 
 class Callback():
     _order = 0

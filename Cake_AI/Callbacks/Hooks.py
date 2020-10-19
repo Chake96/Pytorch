@@ -1,6 +1,34 @@
-from Data.helpers import *
+# from ..Data.helpers import *
 from functools import partial
-from Data.Dataset import ListContainer
+from ..Data.Dataset import ListContainer
+
+#Pytorch Statistic Hooks
+#prints the means and stds of hooked layers
+def append_stat(hook, model, input, output):
+    d = output.data
+    hook.mean, hook.std = d.mean().item(), d.std().item()
+
+def append_stats(hook, mod, inp, outp):
+    """collect statistics using Pytorch Hooks, creates a histogram of the collected data"""
+    if not hasattr(hook,'stats'): hook.stats = ([],[],[])
+    means,stds,hists = hook.stats
+    means.append(outp.data.mean().cpu())
+    stds .append(outp.data.std().cpu())
+    hists.append(outp.data.cpu().histc(40,-7,7))
+
+
+
+
+def append_mean_std(hook, model, inp, outp):
+    """attaches a hook that gets the mean and standard deviation"""
+    if not hasattr(hook, 'stats'):
+        hook.stats=([],[])
+    means, stds = hook.stats
+    if model.training:
+        means.append(outp.data.mean())
+        stds.append(outp.data.std())
+
+
 
 def lsuv_module(model, module, x_mb):
     error_ceiling = 1e-3

@@ -1,21 +1,24 @@
 from torch import nn
+from .Modules import GeneralReLU, Lambda
+from ..Data.augmentations import flatten
+from ..math_utils import prev_pow_2
 #helper functions for manipulating and creating Pytorch 2D convolutional models
 
 #creating 2d convolution models
 #passing in GeneralReLU args
-def get_cnn_layers(num_categories, num_features, layer, **kwargs):
-    num_features = [1] + num_features
-    return [layer(num_features[i], num_features[i+1], 5 if i==0 else 3, **kwargs)
-            for i in range(len(num_features)-1)] + [
-        nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(num_features[-1], num_categories)]
+# def get_cnn_layers(num_categories, num_features, layer, **kwargs):
+#     num_features = [1] + num_features
+#     return [layer(num_features[i], num_features[i+1], 5 if i==0 else 3, **kwargs)
+#             for i in range(len(num_features)-1)] + [
+#         nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(num_features[-1], num_categories)]
 
-#dont need bias, is using batchnorm
+#doesnt need bias, is using batchnorm
 def conv_layer(ni, num_features, ks=3, stride=2, batch_norm=True, **kwargs):
     """creates a 2D convolutional layer with a GeneralRelu Layer, optional: torch.nn.BatchNorm2d layer"""
     layers = [nn.Conv2d(ni, num_features, ks, padding=ks//2, stride=stride, bias = not batch_norm), 
             GeneralReLU(**kwargs)]
     if batch_norm:
-        layers.append(torch.nn.BatchNorm2d(num_features, eps=1e-5, momentum=0.1))
+        layers.append(nn.BatchNorm2d(num_features, eps=1e-5, momentum=0.1))
         # layers.append(Batch_Normalization(num_features))
     return nn.Sequential(*layers)
 
@@ -31,7 +34,7 @@ def init_cnn_(model, func):
         init_cnn_(layer, func)
 
 def init_cnn(model, uniform=False):
-    f = torch.nn.init.kaiming_uniform_ if uniform else torch.nn.init.kaiming_normal_
+    f = nn.init.kaiming_uniform_ if uniform else nn.init.kaiming_normal_
     init_cnn_(model, f)
 
 

@@ -1,9 +1,13 @@
 from fastai import datasets
 from collections import OrderedDict
-import pickle, gzip, os
+import pickle 
+import gzip 
+import os
+import re
 from pathlib import Path
 from typing import Iterable
 from torch import tensor
+from Data.Dataset import ItemList
 
 _camel_re1 = re.compile('(.)([A-Z][a-z]+)')
 _camel_re2 = re.compile('([a-z0-9])([A-Z])')
@@ -77,9 +81,6 @@ def split_by_function(items, func):
 
 def parent_labeler(fn): 
     return fn.parent.name
-
-def _label_by_func(ds, f, cls=ItemList): 
-    return cls([f(o) for o in ds.items], path=ds.path)
 
 
 def get_unique_keys(lst, sort=False):
