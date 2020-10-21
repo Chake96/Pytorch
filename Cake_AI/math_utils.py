@@ -55,3 +55,8 @@ def normalize(x, m, s):
 def prev_pow_2(x): #consider converting to generator
     """returns the previous power of 2 of X"""
     return 2**math.floor(math.log2(x))
+
+
+def linear_combination(v1, v2, beta): 
+    """returns a linear combination with the defined beta parameter"""
+    return beta*v1 + (1-beta)*v2
