@@ -77,7 +77,7 @@ class ConvLayer2D(nn.Module):
         self.relu = GeneralReLU(sub_value=sub, **kwargs)
 
     def forward(self, x):
-         return self.relu(self.conv(x))
+        return self.relu(self.conv(x))
 
     @property
     def bias(self): return -self.relu.sub

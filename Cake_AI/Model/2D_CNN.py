@@ -22,6 +22,15 @@ def conv_layer(ni, num_features, ks=3, stride=2, batch_norm=True, **kwargs):
         # layers.append(Batch_Normalization(num_features))
     return nn.Sequential(*layers)
 
+#dont need bias, is using batchnorm
+def conv_layer(ni, num_features, ks=3, stride=2, batch_norm=True, **kwargs):
+    layers = [nn.Conv2d(ni, num_features, ks, padding=ks//2, stride=stride, bias = not batch_norm), 
+            GeneralReLU(**kwargs)]
+    if batch_norm:
+        layers.append(torch.nn.BatchNorm2d(num_features, eps=1e-5, momentum=0.1))
+        # layers.append(Batch_Normalization(num_features))
+    return nn.Sequential(*layers)
+
 #0s all the bias weights, calls the passed initalizations function on each layer in the model
 def init_cnn_(model, func):
     if isinstance(model, nn.Conv2d):
