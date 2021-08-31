@@ -33,3 +33,4 @@ def lamb_step(p, learning_rate, mom, mom_damp, step_count, sqr_mom, sqr_damp, gr
     p.data.add_((-learning_rate * min(r1/r2,10)), step_count)
     return p
 lamb_step._defaults = dict(eps=1e-6, weight_decay=0.)
+
