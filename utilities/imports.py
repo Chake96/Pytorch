@@ -63,6 +63,8 @@ def accuracy(out, yb): #
 def normalize(x, m, s):
     return (x-m)/s
 
+def lin_comb(v1, v2, beta): return beta*v1 + (1-beta)*v2
+
 #normalize datasets
 def normalize_to(train, valid):
     m,s = train.mean(),train.std()
@@ -70,6 +72,10 @@ def normalize_to(train, valid):
 
 def normalize_channels(x, mean, std):
     return (x-mean[...,None,None]) / std[...,None,None]
+
+def prev_pow_2(x): #consider converting to generator
+    """returns the previous power of 2 of X"""
+    return 2**math.floor(math.log2(x))
 
 #normalizing imagenette dataset
 _m = tensor([0.47, 0.48, 0.45])
@@ -167,12 +173,12 @@ def get_cnn_layers(train_dl, valid_dl, num_ch, num_cat, nfs,layer, **kwargs):
     l2 = prev_pow_2(l1*3*3)
     #3x3 kernel sizes
     layers =  [f(l1  , l2  , stride=1),
-               f(l2  , l2*2, stride=2),
-               f(l2*2, l2*4, stride=2)]
+                f(l2  , l2*2, stride=2),
+                f(l2*2, l2*4, stride=2)]
     nfs = [l2*4] + nfs
     layers += [f(nfs[i], nfs[i+1]) for i in range(len(nfs)-1)]  #build the layers with proper input/output sizes
     layers += [nn.AdaptiveAvgPool2d(1), Lambda(flatten),  #a typical last layer, has num_categories channels out
-               nn.Linear(nfs[-1], num_cat)]
+                nn.Linear(nfs[-1], num_cat)]
     return layers
 
 def get_cnn_model(train_dl, valid_dl, num_chs, num_cat, nfs, layer, **kwargs):
@@ -532,10 +538,17 @@ class Hooks(ListContainer):
 #         self.hyper_params = [{**defaults} for param in self.param_groups] #dictionary to store all hyper parameters, per p_g
 #         self.steppers = convert_to_list(steppers)
     
+<<<<<<< Updated upstream
 #     #goes through each parameter, in every parameter group
 #     def grad_params(self):
 #         return [(p, hyper) for pg, hyper in zip(self.param_groups, self.hyper_params) 
 #                for p in pg if p.grad is not None] #return all valid gradients
+=======
+    #goes through each parameter, in every parameter group
+    def grad_params(self):
+        return [(p, hyper) for pg, hyper in zip(self.param_groups, self.hyper_params) 
+                for p in pg if p.grad is not None] #return all valid gradients
+>>>>>>> Stashed changes
     
 #     def zero_grad(self):
 #         for param,hyperparam in self.grad_params():
@@ -800,37 +813,66 @@ class IndependentVarBatchTransformCallback(Callback):
 #         if self.in_train: self.set_param()
 
 class Runner():
+
+    ALL_CALLBACKS = {'begin_batch', 'after_pred', 'after_loss', 'after_backward', 'after_step',
+        'after_cancel_batch', 'after_batch', 'after_cancel_epoch', 'begin_fit',
+        'begin_epoch', 'begin_validate', 'after_epoch',
+        'after_cancel_train', 'after_fit'}
+
     def __init__(self, cbs=None, cb_funcs=None):
         cbs = convert_to_list(cbs)
-        for cbf in convert_to_list(cb_funcs):
-            cb = cbf()
-            setattr(self, cb.name, cb)
-            cbs.append(cb)
-        self.stop,self.cbs = False,[TrainEvalCallback()]+cbs
+        self.cbs = [TrainEvalCallback()]#ensure training/eval call back is in the Runner
+        self.add_callbacks(cbs)
+        self.add_callbacks(cbf() for cbf in convert_to_list(cb_funcs))
+        self.stop = False
+        self.in_train = False
+        self.loss_function = None
 
+    def add_callback(self, callback):
+        callback.set_runner(self)
+        setattr(self, callback.name, callback)
+        self.cbs.append(callback)
 
-    def one_batch(self, xb, yb):
+    def add_callbacks(self, callbacks):
+        for cb in convert_to_list(callbacks):
+            self.add_callback(cb)
+    
+    def remove_callbacks(self, callbacks):
+        for cb in convert_to_list(callbacks):
+            self.cbs.remove(cb)
+
+    def one_batch(self, i, xb, yb):
         try:
+            self.iter = i
             self.xb,self.yb = xb,yb
             self('begin_batch')
             self.pred = self.model(self.xb)
             self('after_pred')
             self.loss = self.loss_function(self.pred, self.yb)
             self('after_loss')
-            if not self.in_train: return
+            if not self.in_train: 
+                return #if not training we're finished with this batch
             self.loss.backward()
             self('after_backward')
             self.opt.step()
             self('after_step')
             self.opt.zero_grad()
-        except CancelBatchException: self('after_cancel_batch')
-        finally: self('after_batch')
+        except CancelBatchException: 
+            self('after_cancel_batch')
+        finally:
+            self('after_batch')
 
-    def all_batches(self, dl):
-        self.iters = len(dl)
+    def all_batches(self):
+        self.iters = len(self.dl)
         try:
-            for xb,yb in dl: self.one_batch(xb, yb)
-        except CancelEpochException: self('after_cancel_epoch')
+            for i,(xb,yb) in enumerate(self.dl): self.one_batch(i, xb, yb)
+        except CancelEpochException: 
+            self('after_cancel_epoch')
+
+    def before_begin_epoch(self, epoch):
+        self.epoch = epoch
+        self.dl = self.train_dl
+        return self('begin_epoch')
 
     def fit(self, epochs, mod, optimizer, loss_func, train_dl, valid_dl):
         self.epochs = epochs
@@ -845,10 +887,11 @@ class Runner():
             self('begin_fit')
             for epoch in range(epochs):
                 self.epoch = epoch
-                if not self('begin_epoch'): self.all_batches(self.train_dl)
+                if not self.before_begin_epoch(epoch): self.all_batches()
 
                 with torch.no_grad(): 
-                    if not self('begin_validate'): self.all_batches(self.valid_dl)
+                    self.dl = self.valid_dl
+                    if not self('begin_validate'): self.all_batches()
                 self('after_epoch')
             
         except CancelTrainException: self('after_cancel_train')
@@ -858,7 +901,8 @@ class Runner():
 
     def __call__(self, cb_name):
         return_val = False
-        for cb in sorted(self.cbs, key=lambda x: x._order): return_val = cb(cb_name) or return_val
+        for cb in sorted(self.cbs, key=lambda x: x._order):
+            return_val = cb(cb_name) or return_val #possibly should be and, not or
         return return_val
 
 
