@@ -7,5 +7,7 @@
 			"path": "..\\course-v3\\nbs\\dl2\\exp"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"python.pythonPath": "C:\\Users\\Carson\\Anaconda3\\envs\\tf\\python.exe"
+	}
 }
