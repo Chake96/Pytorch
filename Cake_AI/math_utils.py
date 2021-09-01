@@ -1,4 +1,8 @@
-from .imports import *
+# from .imports import *
+import torch.Tensor
+import torch.std
+import math
+import numpy
 import statistics as stats
 
 def variance(obj):
@@ -39,3 +43,20 @@ def std(obj):
         return numpy.std(obj)
     else:
         return stats.stdev(obj)
+
+
+#stastic helper functions-----------------------------------------
+def accuracy(out, yb): #
+     return (torch.argmax(out, dim=1)==yb).float().mean()
+
+def normalize(x, m, s):
+    return (x-m)/s
+
+def prev_pow_2(x): #consider converting to generator
+    """returns the previous power of 2 of X"""
+    return 2**math.floor(math.log2(x))
+
+
+def linear_combination(v1, v2, beta): 
+    """returns a linear combination with the defined beta parameter"""
+    return beta*v1 + (1-beta)*v2

@@ -10,12 +10,16 @@ from torch.utils.data import DataLoader, TensorDataset,  SequentialSampler, Rand
 import torch.nn.functional as F
 import torch.nn.init
 from collections import OrderedDict
+import random
+# from utilities.augmentations import *
+# from utilities.statistics import *
+# from utilities.2D_CNN import *
 
 #os and path functions
 def get_file_paths(path, files, extensions = None):
     path = Path(path) #can pass path as string or LibPath
     res = [path/f for f in files if not f.startswith('.')
-           and ((not extensions) or f'.{f.split(".")[-1].lower()}' in extensions)]
+            and ((not extensions) or f'.{f.split(".")[-1].lower()}' in extensions)]
     return res
 
 def get_file_names(path):
@@ -84,15 +88,35 @@ normalize_imagenette = partial(normalize_channels, mean=_m.cuda(), std=_s.cuda()
 
 #image dataset helper functions
 #show a PIL image, pass in Pytorch Tensor
-def show_image(im, figsize=(3,3)):
-    plt.figure(figsize=figsize)
+def show_image(im, fig_size=(3,3)):
+    if not isinstance(im, torch.Tensor):
+        im = to_byte_tensor(im)
+    plt.figure(figsize=fig_size)
     plt.axis('off')
     plt.imshow(im.permute(1,2,0))
 
-#resize mnist image data -> 28x28
-def mnist_resize(x): return x.view(-1, 1, 28, 28)
+#helper function for show_batch
+def show_image_plot(im, ax=None, figsize=(3,3)):
+    if ax is None: _,ax = plt.subplots(1, 1, figsize=figsize)
+    ax.axis('off')
+    ax.imshow(im.permute(1,2,0))
 
-#flatten an image to 
+def show_batch(batch, num_columns=4, num_rows=None, fig_size=None):
+    """plot a batch of images using matplotlib"""
+    n = len(batch)
+    if num_rows is None:
+        num_rows = int(math.ceil(n/num_columns)) #make it squarish
+    if fig_size is None:
+        fig_size=(num_columns*3, num_rows*3)
+    fig,axes = plt.subplots(num_rows, num_columns, figsize=(fig_size))
+    for xi, ax in zip(batch, axes.flat):
+        show_image_plot(xi, ax)
+
+def mnist_resize(x):
+    """resizes an image to 28x28 dimensions"""
+    return x.view(-1, 1, 28, 28)
+
+# #flatten an image to 
 def flatten(x):
     return x.view(x.shape[0], -1) #removes 1,1 axis from result of AvgPool layer
 
@@ -107,6 +131,7 @@ def list_image_ext():
 #statistics helper functions
 #updated for Leaky Relu 
 def append_stats(hook, mod, inp, outp):
+    """collect statistics using Pytorch Hooks"""
     if not hasattr(hook,'stats'): hook.stats = ([],[],[])
     means,stds,hists = hook.stats
     means.append(outp.data.mean().cpu())
@@ -154,18 +179,18 @@ def init_cnn(model, uniform=False):
     f = torch.nn.init.kaiming_uniform_ if uniform else torch.nn.init.kaiming_normal_
     init_cnn_(model, f)
             
-# def get_cnn_model(num_categories, num_features, layer, **kwargs):
-#     return nn.Sequential(*get_cnn_layers(num_categories, num_features, layer, **kwargs))
+def get_cnn_model(num_categories, num_features, layer, **kwargs):
+    return nn.Sequential(*get_cnn_layers(num_categories, num_features, layer, **kwargs))
 
-# #returns the model and optimizer, will be refactored to be more versatile, currently just used for simple testing
-# def get_model(training_dl, lr=0.5, nh=50):
-#     m = training_dl.dataset.x_dataset.shape[1]
-#     categories = training_dl.dataset.y_dataset.max().item()+1
-#     model = nn.Sequential(nn.Linear(m,nh), nn.ReLU(), nn.Linear(nh,categories))
-#     return model, optim.SGD(model.parameters(), lr=lr)
+#returns the model and optimizer, will be refactored to be more versatile, currently just used for simple testing
+def get_model(training_dl, lr=0.5, nh=50):
+    m = training_dl.dataset.x_dataset.shape[1]
+    categories = training_dl.dataset.y_dataset.max().item()+1
+    model = nn.Sequential(nn.Linear(m,nh), nn.ReLU(), nn.Linear(nh,categories))
+    return model, optim.SGD(model.parameters(), lr=lr)
 
 ##updated CNN model maker
-def prev_pow_2(x): return 2**math.floor(math.log2(x))
+
 
 def get_cnn_layers(train_dl, valid_dl, num_ch, num_cat, nfs,layer, **kwargs):
     def f(ni, nf, stride=2): return layer(ni, nf, 3, stride=stride, **kwargs)
@@ -530,14 +555,15 @@ class Hooks(ListContainer):
         for h in self: h.remove()
 
 #Generic Optimzier ------------------------------------------------------------
-# class Optimizer():
-#     def __init__(self, parameters, steppers, **defaults):
-#         self.param_groups = list(parameters) #each p_g has its own set of hyperparameters
-#         #ensure parameter groups are a list of a list of parameters
-#         if not isinstance(self.param_groups, list): self.param_groups = [self.param_groups]
-#         self.hyper_params = [{**defaults} for param in self.param_groups] #dictionary to store all hyper parameters, per p_g
-#         self.steppers = convert_to_list(steppers)
+class Optimizer():
+    def __init__(self, parameters, steppers, **defaults):
+        self.param_groups = list(parameters) #each p_g has its own set of hyperparameters
+        #ensure parameter groups are a list of a list of parameters
+        if not isinstance(self.param_groups, list): self.param_groups = [self.param_groups]
+        self.hyper_params = [{**defaults} for param in self.param_groups] #dictionary to store all hyper parameters, per p_g
+        self.steppers = convert_to_list(steppers)
     
+<<<<<<< HEAD
 <<<<<<< Updated upstream
 #     #goes through each parameter, in every parameter group
 #     def grad_params(self):
@@ -549,15 +575,24 @@ class Hooks(ListContainer):
         return [(p, hyper) for pg, hyper in zip(self.param_groups, self.hyper_params) 
                 for p in pg if p.grad is not None] #return all valid gradients
 >>>>>>> Stashed changes
+=======
+    #goes through each parameter, in every parameter group
+    def grad_params(self):
+        return [(p, hyper) for pg, hyper in zip(self.param_groups, self.hyper_params) 
+               for p in pg if p.grad is not None] #return all valid gradients
+>>>>>>> main_dev
     
-#     def zero_grad(self):
-#         for param,hyperparam in self.grad_params():
-#             param.grad.detach_() #remove from computational graph
-#             param.grad.zero_() #zero out
+    def zero_grad(self):
+        for param,hyperparam in self.grad_params():
+            param.grad.detach_() #remove from computational graph
+            param.grad.zero_() #zero out
             
-#     def step(self):
-#         for param,hyper in self.grad_params():
-#             compose(param, self.steppers, **hyper)
+    def step(self):
+        for param,hyper in self.grad_params():
+            compose(param, self.steppers, **hyper)
+
+def debias(mom, damp, step): return damp * (1 - mom**step) / (1-mom)
+
 def get_defaults(default): return getattr(default, '_defaults', {}) #grab default attribute
 
 def _update(os, dest, func):
@@ -776,41 +811,41 @@ class IndependentVarBatchTransformCallback(Callback):
     def begin_batch(self): self.run.xb = self.tfm(self.xb)
 
 
-# class Recorder(Callback):
-#     def begin_fit(self):
-#         self.lrs = [[] for _ in self.opt.param_groups]
-#         self.losses = []
+class Recorder(Callback):
+    def begin_fit(self):
+        self.lrs = [[] for _ in self.opt.param_groups]
+        self.losses = []
 
-#     def after_batch(self):
-#         if not self.in_train: return
-#         for pg,lr in zip(self.opt.param_groups,self.lrs): lr.append(pg['lr'])
-#         self.losses.append(self.loss.detach().cpu())        
+    def after_batch(self):
+        if not self.in_train: return
+        for pg,lr in zip(self.opt.param_groups,self.lrs): lr.append(pg['lr'])
+        self.losses.append(self.loss.detach().cpu())        
 
-#     def plot_lr  (self, pgid=-1): plt.plot(self.lrs[pgid])
-#     def plot_loss(self, skip_last=0): plt.plot(self.losses[:len(self.losses)-skip_last])
+    def plot_lr  (self, pgid=-1): plt.plot(self.lrs[pgid])
+    def plot_loss(self, skip_last=0): plt.plot(self.losses[:len(self.losses)-skip_last])
         
-#     def plot(self, skip_last=0, pgid=-1):
-#         losses = [o.item() for o in self.losses]
-#         lrs    = self.lrs[pgid]
-#         n = len(losses)-skip_last
-#         plt.xscale('log')
-#         plt.plot(lrs[:n], losses[:n])
+    def plot(self, skip_last=0, pgid=-1):
+        losses = [o.item() for o in self.losses]
+        lrs    = self.lrs[pgid]
+        n = len(losses)-skip_last
+        plt.xscale('log')
+        plt.plot(lrs[:n], losses[:n])
 
-# class ParamScheduler(Callback):
-#     _order=1
-#     def __init__(self, pname, sched_funcs): self.pname,self.sched_funcs = pname,sched_funcs
+class ParamScheduler(Callback):
+    _order=1
+    def __init__(self, pname, sched_funcs): self.pname,self.sched_funcs = pname,sched_funcs
         
-#     def begin_fit(self):
-#         if not isinstance(self.sched_funcs, (list,tuple)):
-#             self.sched_funcs = [self.sched_funcs] * len(self.opt.param_groups)
+    def begin_fit(self):
+        if not isinstance(self.sched_funcs, (list,tuple)):
+            self.sched_funcs = [self.sched_funcs] * len(self.opt.param_groups)
 
-#     def set_param(self):
-#         assert len(self.opt.param_groups)==len(self.sched_funcs)
-#         for pg,f in zip(self.opt.param_groups,self.sched_funcs):
-#             pg[self.pname] = f(self.n_epochs/self.epochs)
+    def set_param(self):
+        assert len(self.opt.param_groups)==len(self.sched_funcs)
+        for pg,f in zip(self.opt.param_groups,self.sched_funcs):
+            pg[self.pname] = f(self.n_epochs/self.epochs)
             
-#     def begin_batch(self): 
-#         if self.in_train: self.set_param()
+    def begin_batch(self): 
+        if self.in_train: self.set_param()
 
 class Runner():
 
@@ -907,8 +942,8 @@ class Runner():
 
 
 
-#Pytorch Module
-#helper function to summarize models, architectures, schedules, parameters, ect..
+# Pytorch Modules
+# helper function to summarize models, architectures, schedules, parameters, ect..
 def model_summary(runner, model, valid_dl, find_all=False):
     runner.in_train = False #monkey patch to getaround callback ordering issues
     xb,yb = get_one_batch(valid_dl, runner)
